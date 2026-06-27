@@ -1,0 +1,44 @@
+# Ignore model files and large binary artifacts
+*.h5
+*.hdf5
+*.ckpt
+*.pt
+*.pth
+*.pb
+*.joblib
+*.pkl
+*.sav
+*.npy
+*.npz
+*.model
+*.keras
+
+# Large model files (>100MB)
+cnn_classifier_withgan.h5
+resnet_classifier.h5
+resnet_classifierv2.h5
+best_model.keras
+feature_extractor.h5
+feature_extractorv2.h5
+discriminator.h5
+generator.h5
+
+# Ignore trained model directories
+**/SavedModelsAndCheckpoints/
+**/Training/
+**/Testing/
+**/Deployment/
+
+# Ignore Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+
+# Optional: ignore dataset and large data files
+*.csv
+*.zip
+*.tar.gz
+*.tar
+*.gz

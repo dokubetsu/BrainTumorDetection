@@ -1,0 +1,57 @@
+Classification Report:BaselineCNN
+              precision    recall  f1-score   support
+
+     notumor       0.95      0.97      0.96       262
+      glioma       0.88      0.88      0.88       264
+  meningioma       0.84      0.84      0.84       267
+   pituitary       0.97      0.96      0.96       289
+
+    accuracy                           0.91      1082
+   macro avg       0.91      0.91      0.91      1082
+weighted avg       0.91      0.91      0.91      1082
+
+Classification Report:ResNet
+              precision    recall  f1-score   support
+
+     notumor       0.94      0.99      0.96       405
+      glioma       0.97      0.94      0.95       300
+  meningioma       0.92      0.85      0.88       306
+   pituitary       0.96      0.99      0.98       300
+
+    accuracy                           0.95      1311
+   macro avg       0.95      0.94      0.94      1311
+weighted avg       0.95      0.95      0.95      1311
+
+Classification Report:GanWithCNNclassifier
+              precision    recall  f1-score   support
+
+      glioma       0.84      0.57      0.68       300
+  meningioma       0.64      0.87      0.74       306
+     notumor       0.97      0.82      0.89       405
+   pituitary       0.81      0.95      0.88       300
+
+    accuracy                           0.80      1311
+   macro avg       0.81      0.80      0.79      1311
+weighted avg       0.83      0.80      0.80      1311
+
+Classification Report:GANwithREsentClassifier
+              precision    recall  f1-score   support
+
+      glioma       0.92      0.92      0.92       300
+  meningioma       0.96      0.97      0.97       306
+     notumor       0.97      0.95      0.96       405
+   pituitary       0.98      0.99      0.99       300
+
+    accuracy                           0.96      1311
+   macro avg       0.96      0.96      0.96      1311
+weighted avg       0.96      0.96      0.96      1311
+
+GANwithUnsupervisedKMeansClassifier
+Overall Tumor Detection Accuracy: 69.03%
+Tumor Classification Accuracy: 52.65%
+
+Per-class Results:
+notumor detection accuracy: 0.25%
+meningioma detection accuracy: 99.35%
+glioma detection accuracy: 100.00%
+pituitary detection accuracy: 100.00%

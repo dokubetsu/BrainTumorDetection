@@ -1,0 +1,498 @@
+import streamlit as st
+import tensorflow as tf
+import numpy as np
+import cv2
+from PIL import Image
+import matplotlib.pyplot as plt
+import seaborn as sns
+import io
+import glob
+import re
+
+class TumorDetectorApp:
+    def __init__(self):
+        self.load_models()
+        self.class_names = ['notumor', 'glioma', 'meningioma', 'pituitary']
+        self.load_gan_checkpoints()
+        
+    def load_models(self):
+        """Load necessary models directly"""
+        try:
+            # Load main classifier
+            self.classifier = tf.keras.models.load_model('resnet_classifier.h5')
+            
+            # Load GAN components
+            self.generator = tf.keras.models.load_model('generator.h5')
+            self.feature_model = tf.keras.models.load_model('feature_extractor.h5')
+            self.latent_dim = 100
+            
+            print("Models loaded successfully")
+            
+        except Exception as e:
+            st.error(f"Error loading models: {str(e)}")
+            raise e
+
+    def preprocess_image(self, image, target_size=(256, 256)):
+        """Preprocess uploaded image"""
+        try:
+            # Convert PIL Image to numpy array
+            img = np.array(image.convert('L'))
+            
+            # Resize
+            img = cv2.resize(img, target_size)
+            img = img.astype(np.float32)
+            img = img / 255.0
+            
+            # Add channel dimension
+            if len(img.shape) == 2:
+                img = np.expand_dims(img, axis=-1)
+            
+            return img
+            
+        except Exception as e:
+            st.error(f"Error preprocessing image: {str(e)}")
+            return None
+    
+    def generate_anomaly_heatmap(self, original, reconstruction):
+        """Generate heatmap showing areas of anomaly"""
+        try:
+            # Ensure both inputs are 3D (height, width, channels)
+            if len(original.shape) == 4:
+                original = original[0]  # Remove batch dimension
+            if len(reconstruction.shape) == 4:
+                reconstruction = reconstruction[0]  # Remove batch dimension
+                
+            difference = np.abs(original - reconstruction)
+            
+            # Ensure difference is 2D by taking the mean across channels if needed
+            if len(difference.shape) == 3:
+                difference = np.mean(difference, axis=-1)
+                
+            # Normalize difference to 0-1 range
+            difference = (difference - difference.min()) / (difference.max() - difference.min() + 1e-7)
+            
+            # Convert to heatmap
+            heatmap = cv2.applyColorMap((difference * 255).astype(np.uint8), 
+                                      cv2.COLORMAP_JET)
+            return heatmap
+            
+        except Exception as e:
+            st.error(f"Error generating heatmap: {str(e)}")
+            return None
+    
+    def plot_reconstruction_comparison(self, original, reconstruction):
+        """Create a plot comparing original and reconstructed images"""
+        try:
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+            
+            # Remove batch dimension if present
+            if len(original.shape) == 4:
+                original = original[0]
+            if len(reconstruction.shape) == 4:
+                reconstruction = reconstruction[0]
+            
+            # Original image
+            if len(original.shape) == 3:
+                original_display = original[:, :, 0]
+            else:
+                original_display = original
+            ax1.imshow(original_display, cmap='gray')
+            ax1.set_title('Original Image')
+            ax1.axis('off')
+            
+            # Reconstructed image
+            if len(reconstruction.shape) == 3:
+                reconstruction_display = reconstruction[:, :, 0]
+            else:
+                reconstruction_display = reconstruction
+            ax2.imshow(reconstruction_display, cmap='gray')
+            ax2.set_title('Reconstructed Image')
+            ax2.axis('off')
+            
+            # Difference heatmap
+            heatmap = self.generate_anomaly_heatmap(original, reconstruction)
+            if heatmap is not None:
+                ax3.imshow(cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB))
+                ax3.set_title('Anomaly Heatmap')
+                ax3.axis('off')
+            
+            plt.tight_layout()
+            return fig
+            
+        except Exception as e:
+            st.error(f"Error plotting reconstruction comparison: {str(e)}")
+            return None
+    
+    def plot_confidence_distribution(self, confidences):
+        """Create a bar plot of confidence scores"""
+        fig, ax = plt.subplots(figsize=(10, 5))
+        sns.barplot(x=list(confidences.keys()), y=list(confidences.values()), ax=ax)
+        plt.xticks(rotation=45)
+        plt.title('Confidence Distribution Across Classes')
+        plt.tight_layout()
+        return fig
+
+    def compute_pixel_wise_anomaly(self, original, reconstruction):
+        """Compute pixel-wise anomaly scores"""
+        try:
+            # Remove batch dimension if present
+            if len(original.shape) == 4:
+                original = original[0]
+            if len(reconstruction.shape) == 4:
+                reconstruction = reconstruction[0]
+            
+            # Compute absolute difference
+            difference = np.abs(original - reconstruction)
+            
+            # If the difference is 3D (has channels), take mean across channels
+            if len(difference.shape) == 3:
+                difference = np.mean(difference, axis=-1)
+                
+            return difference
+            
+        except Exception as e:
+            st.error(f"Error computing pixel-wise anomaly: {str(e)}")
+            return None
+
+    def predict(self, image):
+        """Make prediction using loaded models"""
+        try:
+            # Ensure input has batch dimension
+            if len(image.shape) == 3:
+                image = np.expand_dims(image, axis=0)
+                
+            # Get ResNet prediction
+            resnet_predictions = self.classifier.predict(image, verbose=0)
+            confidence_scores = resnet_predictions[0]
+            predicted_class_idx = np.argmax(confidence_scores)
+            predicted_class = self.class_names[predicted_class_idx]
+            
+            # Generate reconstructions and compute anomaly scores
+            latent_vectors = tf.random.normal((10, self.latent_dim))
+            reconstructions = self.generator(latent_vectors, training=False)
+            
+            reconstruction_errors = tf.reduce_mean(
+                tf.square(reconstructions - tf.repeat(image, 10, axis=0)),
+                axis=[1, 2, 3]
+            )
+            
+            best_idx = tf.argmin(reconstruction_errors)
+            best_reconstruction = reconstructions[best_idx:best_idx+1]
+            reconstruction_error = float(reconstruction_errors[best_idx])
+            
+            real_feat = self.feature_model(image, training=False)
+            fake_feat = self.feature_model(best_reconstruction, training=False)
+            feature_error = float(tf.reduce_mean(tf.square(real_feat - fake_feat)))
+            
+            # Compute pixel-wise anomaly scores
+            pixel_anomaly = self.compute_pixel_wise_anomaly(image, best_reconstruction)
+            
+            return {
+                'class': predicted_class,
+                'confidence': float(confidence_scores[predicted_class_idx]),
+                'all_confidences': {
+                    name: float(score) 
+                    for name, score in zip(self.class_names, confidence_scores)
+                },
+                'reconstruction_error': reconstruction_error,
+                'feature_error': feature_error,
+                'best_reconstruction': best_reconstruction,
+                'pixel_anomaly': pixel_anomaly
+            }
+            
+        except Exception as e:
+            st.error(f"Error making prediction: {str(e)}")
+            return None
+    
+    def load_gan_checkpoints(self):
+        """Load generator checkpoints from 500 to 10000 iterations"""
+        try:
+            # Get all generator checkpoints
+            gen_checkpoints = sorted(glob.glob('generator_epoch*.h5'), 
+                                  key=lambda x: int(re.findall(r'\d+', x)[0]))
+            
+            self.checkpoint_iterations = [
+                int(re.findall(r'\d+', cp)[0]) for cp in gen_checkpoints
+            ]
+            
+            # Load all generator checkpoints
+            self.generator_checkpoints = {}
+            for cp in gen_checkpoints:
+                iteration = int(re.findall(r'\d+', cp)[0])
+                self.generator_checkpoints[iteration] = tf.keras.models.load_model(cp)
+                
+            print(f"Loaded {len(self.generator_checkpoints)} generator checkpoints")
+            
+        except Exception as e:
+            st.error(f"Error loading generator checkpoints: {str(e)}")
+            self.checkpoint_iterations = []
+            
+    def visualize_gan_progression(self, original_image, selected_checkpoints=None):
+        """Create visualization of GAN reconstruction progress across training iterations"""
+        try:
+            if not self.checkpoint_iterations:
+                return None
+                
+            # If no specific checkpoints selected, use all
+            if selected_checkpoints is None:
+                selected_checkpoints = self.checkpoint_iterations
+                
+            # Ensure image has batch dimension
+            if len(original_image.shape) == 3:
+                original_image = np.expand_dims(original_image, axis=0)
+                
+            # Create fixed latent vector for consistency
+            fixed_latent = tf.random.normal((1, self.latent_dim))
+            
+            # Create subplot grid (4x4 maximum per figure)
+            images_per_figure = 15  # 15 reconstructions + 1 original
+            n_checkpoints = len(selected_checkpoints)
+            n_figures = (n_checkpoints + images_per_figure - 2) // (images_per_figure - 1)
+            
+            figures = []
+            for fig_idx in range(n_figures):
+                start_idx = fig_idx * (images_per_figure - 1)
+                end_idx = min(start_idx + images_per_figure - 1, n_checkpoints)
+                current_checkpoints = selected_checkpoints[start_idx:end_idx]
+                
+                fig = plt.figure(figsize=(20, 15))
+                
+                # Plot original image
+                ax = plt.subplot(4, 4, 1)
+                if len(original_image.shape) == 4 and original_image.shape[-1] == 1:
+                    display_img = original_image[0, :, :, 0]
+                else:
+                    display_img = original_image[0]
+                ax.imshow(display_img, cmap='gray')
+                ax.set_title('Original Image')
+                ax.axis('off')
+                
+                # Generate and plot reconstructions for current set of checkpoints
+                for idx, iteration in enumerate(current_checkpoints, start=1):
+                    generator = self.generator_checkpoints[iteration]
+                    
+                    # Generate reconstruction
+                    reconstruction = generator(fixed_latent, training=False)
+                    
+                    # Plot reconstruction
+                    ax = plt.subplot(4, 4, idx + 1)
+                    if len(reconstruction.shape) == 4 and reconstruction.shape[-1] == 1:
+                        display_img = reconstruction[0, :, :, 0]
+                    else:
+                        display_img = reconstruction[0]
+                    ax.imshow(display_img, cmap='gray')
+                    ax.set_title(f'Iteration {iteration}')
+                    ax.axis('off')
+                    
+                    # Compute and display metrics
+                    mse = tf.reduce_mean(tf.square(original_image - reconstruction))
+                    ssim = tf.image.ssim(
+                        original_image, 
+                        reconstruction, 
+                        max_val=1.0
+                    )
+                    ax.text(
+                        0.5, -0.1,
+                        f'MSE: {float(mse):.3f}\nSSIM: {float(ssim):.3f}',
+                        ha='center',
+                        transform=ax.transAxes
+                    )
+                
+                plt.tight_layout()
+                figures.append(fig)
+                plt.close(fig)
+                
+            return figures
+            
+        except Exception as e:
+            st.error(f"Error visualizing GAN progression: {str(e)}")
+            return None
+
+def main():
+    st.set_page_config(
+        page_title="Brain Tumor Detection",
+        page_icon="🧠",
+        layout="wide"
+    )
+    
+    st.title("Brain Tumor Detection System 🧠")
+    st.write("""
+    Upload a brain MRI scan to detect the presence and type of tumor.
+    This system uses a hybrid approach combining deep learning classification
+    and GAN-based anomaly detection. You can also visualize how the GAN's
+    reconstruction capability evolved during training.
+    """)
+    
+    # Initialize model
+    try:
+        model = TumorDetectorApp()
+    except Exception as e:
+        st.error("Failed to initialize model. Please check logs.")
+        return
+    
+    # File upload
+    uploaded_file = st.file_uploader(
+        "Choose a brain MRI scan image...",
+        type=['png', 'jpg', 'jpeg']
+    )
+    
+    # Add GAN visualization controls
+    show_gan_progress = st.checkbox(
+        "Show GAN Training Progression",
+        help="Visualize how the GAN's reconstruction capability evolved during training"
+    )
+    
+    if show_gan_progress and model.checkpoint_iterations:
+        st.subheader("GAN Visualization Controls")
+        # Add checkpoint selection
+        all_checkpoints = model.checkpoint_iterations
+        default_indices = list(range(0, len(all_checkpoints), len(all_checkpoints)//5))[:5]
+        default_checkpoints = [all_checkpoints[i] for i in default_indices]
+        
+        selected_checkpoints = st.multiselect(
+            "Select checkpoints to visualize",
+            options=all_checkpoints,
+            default=default_checkpoints,
+            help="Choose which training iterations to display"
+        )
+    
+    if uploaded_file is not None:
+        try:
+            # Create columns for layout
+            col1, col2, col3 = st.columns([1, 1, 1])
+            
+            with col1:
+                st.subheader("Original Image")
+                image = Image.open(uploaded_file)
+                st.image(image, use_column_width=True)
+                
+            # Preprocess and predict
+            processed_image = model.preprocess_image(image)
+            if processed_image is not None:
+                with st.spinner('Analyzing image...'):
+                    prediction = model.predict(processed_image)
+                    
+                    # [Previous prediction display code remains unchanged...]
+                    
+                    if show_gan_progress:
+                        st.subheader("GAN Training Progression")
+                        st.write("""
+                        This visualization shows how the GAN's reconstruction capability
+                        evolved during training. For each checkpoint, you can see:
+                        - The reconstructed image
+                        - MSE (Mean Squared Error) compared to the original
+                        - SSIM (Structural Similarity Index) compared to the original
+                        """)
+                        
+                        selected_checkpoints = selected_checkpoints if 'selected_checkpoints' in locals() else None
+                        progress_figures = model.visualize_gan_progression(
+                            processed_image, 
+                            selected_checkpoints
+                        )
+                        
+                        if progress_figures:
+                            for fig_idx, fig in enumerate(progress_figures):
+                                st.pyplot(fig)
+                        
+                        st.write("""
+                        **Note:** Lower MSE and higher SSIM indicate better reconstruction quality.
+                        You can observe how the generator's ability to create realistic brain MRI
+                        images improves across training iterations.
+                        """)
+                    
+        except Exception as e:
+            st.error(f"Error processing image: {str(e)}")
+        st.write("""
+    **Note:** The GAN model used for anomaly detection was trained on **axial images** only, 
+    due to computational constraints. While it can analyze other views (coronal, sagittal), 
+    its performance is expected to be optimal on **axial scans**. Future improvements might 
+    include training separate models for different MRI views to enhance accuracy across all scan types.
+    """)
+    
+    if uploaded_file is not None:
+        try:
+            # Create three columns for better layout
+            col1, col2, col3 = st.columns([1, 1, 1])
+            
+            with col1:
+                st.subheader("Original Image")
+                image = Image.open(uploaded_file)
+                st.image(image, use_column_width=True)
+                
+            # Preprocess and predict
+            processed_image = model.preprocess_image(image)
+            if processed_image is not None:
+                with st.spinner('Analyzing image...'):
+                    prediction = model.predict(processed_image)
+                
+                if prediction:
+                    with col2:
+                        st.subheader("Detection Results")
+                        
+                        # Display main prediction with color
+                        result_color = (
+                            "green" if prediction['class'] == 'notumor' 
+                            else "red"
+                        )
+                        st.markdown(
+                            f"**Detected Class:** "
+                            f"<span style='color:{result_color}'>"
+                            f"{prediction['class'].upper()}</span>",
+                            unsafe_allow_html=True
+                        )
+                        
+                        # Display confidence
+                        st.markdown(
+                            f"**Confidence:** "
+                            f"{prediction['confidence']*100:.1f}%"
+                        )
+                        
+                        # Show detailed anomaly metrics
+                        st.subheader("Anomaly Analysis")
+                        st.write(f"Reconstruction Error: {prediction['reconstruction_error']:.3f}")
+                        st.write(f"Feature Error: {prediction['feature_error']:.3f}")
+                        
+                        # Plot pixel-wise anomaly distribution
+                        if prediction['pixel_anomaly'] is not None:
+                            fig, ax = plt.subplots()
+                            sns.histplot(prediction['pixel_anomaly'].flatten(), bins=50, ax=ax)
+                            ax.set_title('Distribution of Pixel-wise Anomaly Scores')
+                            ax.set_xlabel('Anomaly Score')
+                            ax.set_ylabel('Count')
+                            st.pyplot(fig)
+                    
+                    with col3:
+                        st.subheader("Class Probability Distribution")
+                        confidence_fig = model.plot_confidence_distribution(
+                            prediction['all_confidences']
+                        )
+                        st.pyplot(confidence_fig)
+                    
+                    # Show reconstruction comparison
+                    st.subheader("GAN Reconstruction Analysis")
+                    reconstruction_fig = model.plot_reconstruction_comparison(
+                        processed_image,
+                        prediction['best_reconstruction']
+                    )
+                    if reconstruction_fig is not None:
+                        st.pyplot(reconstruction_fig)
+                    
+                    # Additional information and disclaimer
+                    st.markdown("""
+                    ---
+                    ### Understanding the Results
+                    - The **Reconstruction Error** shows how well the GAN could reconstruct the image
+                    - The **Feature Error** measures differences in high-level features
+                    - The **Anomaly Heatmap** highlights regions that differ from typical patterns
+                    - The **Pixel-wise Anomaly Distribution** shows the distribution of anomaly scores across all pixels
+                    
+                    **Note:** This is an automated analysis tool and should not
+                    be used as the sole basis for medical decisions. Always
+                    consult with a qualified healthcare professional.
+                    """)
+                
+        except Exception as e:
+            st.error(f"Error processing image: {str(e)}")
+
+if __name__ == '__main__':
+    main()
